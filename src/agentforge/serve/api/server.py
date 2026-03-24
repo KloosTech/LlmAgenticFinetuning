@@ -139,17 +139,21 @@ def create_app(model_path: str, adapter_path: Optional[str], cfg: ServerConfig) 
                 media_type="text/event-stream",
             )
 
-        # Non-streaming
-        from mlx_lm import generate  # type: ignore[import]
+        # Non-streaming — run MLX (synchronous) in a thread to avoid blocking the event loop
+        import asyncio
+        from mlx_lm import generate as mlx_generate  # type: ignore[import]
 
-        response_text = generate(
-            model,
-            tokenizer,
-            prompt=prompt,
-            max_tokens=max_tokens,
-            temp=temp,
-            top_p=top_p,
-            verbose=False,
+        loop = asyncio.get_event_loop()
+        response_text = await loop.run_in_executor(
+            None,
+            lambda: mlx_generate(
+                model, tokenizer,
+                prompt=prompt,
+                max_tokens=max_tokens,
+                temp=temp,
+                top_p=top_p,
+                verbose=False,
+            ),
         )
 
         completion_id = f"chatcmpl-{uuid.uuid4().hex[:8]}"
@@ -209,44 +213,67 @@ async def _stream_response(
     top_p: float,
     model_name: str,
 ) -> AsyncIterator[str]:
-    """Yield SSE chunks in OpenAI stream format."""
+    """Yield SSE chunks in OpenAI stream format.
+
+    MLX's generate_step is a synchronous generator — running it directly in an
+    async function would block the event loop on every token.  Instead, we push
+    tokens from a thread-pool thread into an asyncio.Queue and consume them here
+    on the event loop, keeping FastAPI fully responsive during generation.
+    """
     import json
-    from mlx_lm.utils import generate_step  # type: ignore[import]
-    import mlx.core as mx
+    import asyncio
 
     completion_id = f"chatcmpl-{uuid.uuid4().hex[:8]}"
     created = int(time.time())
+    loop = asyncio.get_event_loop()
+    queue: asyncio.Queue = asyncio.Queue()
 
-    prompt_tokens = tokenizer.encode(prompt)
-    prompt_mx = mx.array(prompt_tokens)
+    def _producer() -> None:
+        """Runs in a thread pool; feeds tokens into the queue."""
+        from mlx_lm import generate as _mlx_gen  # type: ignore[import]
+        try:
+            # stream_generate yields (text_chunk, metadata) pairs
+            from mlx_lm.generate import stream_generate  # type: ignore[import]
+            for response in stream_generate(
+                model, tokenizer, prompt,
+                max_tokens=max_tokens, temp=temp, top_p=top_p,
+            ):
+                loop.call_soon_threadsafe(queue.put_nowait, response.text)
+        except Exception as exc:
+            loop.call_soon_threadsafe(queue.put_nowait, exc)
+        finally:
+            loop.call_soon_threadsafe(queue.put_nowait, None)  # sentinel
 
-    tokens_generated = 0
-    for token, _ in generate_step(prompt_mx, model, temp=temp, top_p=top_p):
-        if tokens_generated >= max_tokens:
+    # Kick off the producer in a thread
+    loop.run_in_executor(None, _producer)
+
+    # First chunk carries the role
+    first = {
+        "id": completion_id, "object": "chat.completion.chunk",
+        "created": created, "model": model_name,
+        "choices": [{"index": 0, "delta": {"role": "assistant"}, "finish_reason": None}],
+    }
+    yield f"data: {json.dumps(first)}\n\n"
+
+    # Stream content chunks as they arrive
+    while True:
+        item = await queue.get()
+        if item is None:
             break
-        tokens_generated += 1
-
-        token_text = tokenizer.decode([token.item()])
+        if isinstance(item, Exception):
+            raise item
         chunk = {
-            "id": completion_id,
-            "object": "chat.completion.chunk",
-            "created": created,
-            "model": model_name,
-            "choices": [{
-                "index": 0,
-                "delta": {"role": "assistant", "content": token_text},
-                "finish_reason": None,
-            }],
+            "id": completion_id, "object": "chat.completion.chunk",
+            "created": created, "model": model_name,
+            "choices": [{"index": 0, "delta": {"content": item}, "finish_reason": None}],
         }
         yield f"data: {json.dumps(chunk)}\n\n"
 
     # Final chunk
-    final_chunk = {
-        "id": completion_id,
-        "object": "chat.completion.chunk",
-        "created": created,
-        "model": model_name,
+    final = {
+        "id": completion_id, "object": "chat.completion.chunk",
+        "created": created, "model": model_name,
         "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}],
     }
-    yield f"data: {json.dumps(final_chunk)}\n\n"
+    yield f"data: {json.dumps(final)}\n\n"
     yield "data: [DONE]\n\n"
