@@ -1,0 +1,48 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "agentforge"
+version = "0.1.0"
+description = "End-to-end LLM fine-tuning, serving, and agentic workflow for Apple Silicon"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+keywords = ["llm", "fine-tuning", "mlx", "agents", "apple-silicon"]
+
+dependencies = [
+    "typer[all]>=0.12",
+    "fastapi>=0.111",
+    "uvicorn[standard]>=0.29",
+    "mlx-lm>=0.14",
+    "datasets>=2.19",
+    "huggingface-hub>=0.22",
+    "pydantic>=2.7",
+    "pydantic-settings>=2.2",
+    "pyyaml>=6.0",
+    "rich>=13.7",
+    "langchain>=0.2",
+    "langchain-community>=0.2",
+    "langchain-openai>=0.1",
+    "duckduckgo-search>=5.3",
+    "httpx>=0.27",
+    "psutil>=5.9",
+    "sse-starlette>=1.8",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.23",
+    "httpx>=0.27",
+]
+
+[project.scripts]
+agentforge = "agentforge.cli.main:app"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+agentforge = ["py.typed"]

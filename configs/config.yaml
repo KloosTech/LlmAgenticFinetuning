@@ -1,0 +1,57 @@
+# AgentForge Configuration
+# Tuned for Apple Silicon M1 Max, 32 GB unified RAM
+# MLX uses Metal — tensors live in unified CPU/GPU memory
+
+model:
+  # 8-bit Mistral-7B: ~8GB Metal memory, leaves ~24GB headroom on M1 Max 32GB
+  base_model: "mlx-community/Mistral-7B-Instruct-v0.3-8bit"
+  adapter_path: null          # set to adapter dir after `agentforge train`
+  fused_model_path: "./models/fused"
+
+training:
+  output_dir: "./adapters"
+  num_layers: 32              # M1 Max 32GB: LoRA on all transformer layers
+  batch_size: 8               # M1 Max unified memory handles large batches
+  learning_rate: 1.0e-4
+  num_iterations: 1000
+  steps_per_eval: 100
+  save_every: 200
+  grad_checkpoint: true       # gradient checkpointing saves memory during backprop
+  lora_rank: 16
+  lora_scale: 20.0
+  data_path: "./data"         # output directory from `agentforge dataset pull`
+
+datasets:
+  output_dir: "./data"
+  train_split: 0.95
+  sources:
+    - name: "hermes"
+      enabled: true
+      hf_repo: "teknium/OpenHermes-2.5"
+      max_samples: 5000
+    - name: "toolbench"
+      enabled: true
+      hf_repo: "ToolBench/ToolBench"
+      subset: "G1_instruction"
+      max_samples: 2000
+
+server:
+  host: "127.0.0.1"
+  port: 8080
+  model_path: null            # falls back to model.base_model if null
+  adapter_path: null          # optional: serve base + loose adapter (no fusion needed)
+  max_tokens: 2048
+  temp: 0.7
+  top_p: 0.9
+  repetition_penalty: 1.1
+
+agent:
+  api_base: "http://127.0.0.1:8080/v1"
+  model: "local"
+  max_iterations: 10
+  verbose: true
+  tools:
+    - web_search
+    - shell
+    - python_repl
+    - read_file
